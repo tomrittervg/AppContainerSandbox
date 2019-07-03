@@ -27,7 +27,7 @@ void NetworkTest()
 {
     printf("[+] Running network test...\n");
 
-    CHAR external_ip[] = "74.125.227.200"; //Google
+    CHAR external_ip[] = "97.107.139.108"; //Google
     CHAR *network_ip = GatewayIp(); //Default Gateway
 
     //Connections to external IPs should be blocked
@@ -76,7 +76,7 @@ void FilesystemTest()
 void ProcessListTest()
 {
     printf("[+] Running process list testing...\n");
-    tagPROCESSENTRY32W process_entry;
+	PROCESSENTRY32 process_entry;
     HANDLE snapshot;
 
     process_entry.dwSize = sizeof(process_entry);
@@ -88,7 +88,7 @@ void ProcessListTest()
         {
             do 
             {
-                printf("Found process: %ws\n", process_entry.szExeFile);
+                printf("Found process: %s\n", process_entry.szExeFile);
             } while (Process32Next(snapshot, &process_entry));
         }
         CloseHandle(snapshot);

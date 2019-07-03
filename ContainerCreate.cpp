@@ -4,13 +4,30 @@
 #include <Userenv.h>
 #include <AccCtrl.h>
 #include <Aclapi.h>
+#include <subauth.h>
 
 #pragma comment(lib, "Userenv.lib")
 
 //List of allowed capabilities for the application
-extern WELL_KNOWN_SID_TYPE app_capabilities[] =
+extern WELL_KNOWN_SID_TYPE well_known_app_capabilities[] =
 {
-    WinCapabilityPrivateNetworkClientServerSid,
+	WinCapabilityInternetClientSid,
+  WinCapabilityInternetClientServerSid,
+  WinCapabilityPrivateNetworkClientServerSid,
+  WinCapabilityPicturesLibrarySid,
+  WinCapabilityVideosLibrarySid,
+  WinCapabilityMusicLibrarySid,
+  WinCapabilityDocumentsLibrarySid,
+  WinCapabilitySharedUserCertificatesSid,
+  WinCapabilityEnterpriseAuthenticationSid,
+  WinCapabilityRemovableStorageSid,
+  //WinCapabilityAppointmentsSid,
+  //WinCapabilityContactsSid
+};
+
+const wchar_t* named_capabilities[] = {
+				       L"registryRead",
+				       NULL
 };
 
 WCHAR container_name[] = L"MtSandboxTest";
@@ -148,13 +165,64 @@ BOOL IsInAppContainer()
     return is_container;
 }
 
+typedef const UNICODE_STRING* PCUNICODE_STRING;
+
+typedef NTSTATUS(WINAPI* RtlDeriveCapabilitySidsFromNameFunction)(
+    PCUNICODE_STRING SourceString,
+    PSID CapabilityGroupSid,
+    PSID CapabilitySid);
+
+typedef VOID(WINAPI* RtlInitUnicodeStringFunction)(IN OUT PUNICODE_STRING
+                                                       DestinationString,
+                                                   IN PCWSTR SourceString);
+
+void ResolveNTFunctionPtr(const char* name, void* ptr) {
+  static volatile HMODULE ntdll = nullptr;
+
+  if (!ntdll) {
+    ntdll = ::GetModuleHandle("ntdll.dll");
+   }
+
+  FARPROC* function_ptr = reinterpret_cast<FARPROC*>(ptr);
+  *function_ptr = ::GetProcAddress(ntdll, name);
+}
+
+BOOL CreateNamedCapabilitySid(const wchar_t* capability_name, PSID sid)
+{
+
+  RtlDeriveCapabilitySidsFromNameFunction derive_capability_sids = nullptr;
+  ResolveNTFunctionPtr("RtlDeriveCapabilitySidsFromName",
+                       &derive_capability_sids);
+  RtlInitUnicodeStringFunction init_unicode_string = nullptr;
+  ResolveNTFunctionPtr("RtlInitUnicodeString", &init_unicode_string);
+
+  if (!derive_capability_sids || !init_unicode_string)
+    return FALSE;
+
+  if (!capability_name || ::wcslen(capability_name) == 0)
+    return FALSE;
+
+  UNICODE_STRING name = {};
+  init_unicode_string(&name, capability_name);
+  BYTE group_sid[SECURITY_MAX_SID_SIZE];
+
+  NTSTATUS status =
+    derive_capability_sids(&name, &group_sid, sid);
+  if (!NT_SUCCESS(status))
+    return FALSE;
+
+  return TRUE;
+}
+
 /*
     Set the security capabilities of the container to those listed in app_capabilities
 */
 BOOL SetSecurityCapabilities(PSID container_sid, SECURITY_CAPABILITIES *capabilities, PDWORD num_capabilities)
 {
     DWORD sid_size = SECURITY_MAX_SID_SIZE;
-    DWORD num_capabilities_ =  sizeof(app_capabilities) / sizeof(DWORD);
+    DWORD num_well_known_capabilities_ = sizeof(well_known_app_capabilities) / sizeof(DWORD);
+    DWORD num_named_capabilities_ = sizeof(named_capabilities) / sizeof(wchar_t*);
+    DWORD num_capabilities_ =  num_well_known_capabilities_ + num_named_capabilities_ - 1;
     SID_AND_ATTRIBUTES *attributes;
     BOOL success = TRUE;
 
@@ -163,16 +231,26 @@ BOOL SetSecurityCapabilities(PSID container_sid, SECURITY_CAPABILITIES *capabili
     ZeroMemory(capabilities, sizeof(SECURITY_CAPABILITIES));
     ZeroMemory(attributes, sizeof(SID_AND_ATTRIBUTES) * num_capabilities_);
 
-    for(unsigned int i = 0; i < num_capabilities_; i++)
+    for(unsigned int i = 0; i < num_well_known_capabilities_; i++)
     {
         attributes[i].Sid = malloc(SECURITY_MAX_SID_SIZE);
-        if(!CreateWellKnownSid(app_capabilities[i], NULL, attributes[i].Sid, &sid_size))
+        if(!CreateWellKnownSid(well_known_app_capabilities[i], NULL, attributes[i].Sid, &sid_size))
         {
             success = FALSE;
             break;
         }
         attributes[i].Attributes = SE_GROUP_ENABLED;
     }
+    for(unsigned int i = 0; i < num_named_capabilities_ - 1; i++)
+      {
+	attributes[num_well_known_capabilities_ + i].Sid = malloc(SECURITY_MAX_SID_SIZE);
+	if(!CreateNamedCapabilitySid(named_capabilities[i], attributes[num_well_known_capabilities_ + i].Sid))
+	  {
+	    success = FALSE;
+	    break;
+	  }
+	attributes[num_well_known_capabilities_ + i].Attributes = SE_GROUP_ENABLED;
+      }
 
     if(success == FALSE)
     {
@@ -242,9 +320,6 @@ BOOL GrantNamedObjectAccess(PSID appcontainer_sid, CHAR *object_name, SE_OBJECT_
         success = TRUE;
 
     } while (FALSE);
-
-   if(original_acl)
-       LocalFree(original_acl);
 
    if(new_acl)
        LocalFree(new_acl);
